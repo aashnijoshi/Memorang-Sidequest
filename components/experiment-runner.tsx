@@ -1,0 +1,311 @@
+"use client"
+
+import { useState } from "react"
+import { useStore } from "@/hooks/use-store"
+import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import { Label } from "@/components/ui/label"
+import { Play, CheckCircle2, XCircle, Beaker } from "lucide-react"
+import { generateId, runLocalGrade } from "@/lib/store"
+import type { ExperimentResult, GradeResult } from "@/lib/store"
+
+function PassFailBadge({
+  result,
+}: {
+  result: GradeResult
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex items-center cursor-default">
+          {result.pass ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
+              <CheckCircle2 className="size-3" />
+              Pass
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive">
+              <XCircle className="size-3" />
+              Fail
+            </span>
+          )}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-xs">
+        <p className="text-xs">{result.reason}</p>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function SummaryStats({
+  experiment,
+}: {
+  experiment: ExperimentResult
+}) {
+  let total = 0
+  let passed = 0
+
+  for (const testCaseResults of Object.values(experiment.results)) {
+    for (const gradeResult of Object.values(testCaseResults)) {
+      total++
+      if (gradeResult.pass) passed++
+    }
+  }
+
+  const rate = total > 0 ? Math.round((passed / total) * 100) : 0
+
+  return (
+    <div className="flex items-center gap-4 text-sm">
+      <span className="font-medium text-foreground">
+        {passed}/{total} passed
+      </span>
+      <span className="text-muted-foreground">({rate}%)</span>
+    </div>
+  )
+}
+
+export function ExperimentRunner() {
+  const { datasets, graders, store: appStore } = useStore()
+  const [selectedDatasetId, setSelectedDatasetId] = useState<string>("")
+  const [selectedGraderIds, setSelectedGraderIds] = useState<string[]>([])
+  const [running, setRunning] = useState(false)
+  const [latestExperiment, setLatestExperiment] =
+    useState<ExperimentResult | null>(null)
+  const [progress, setProgress] = useState<{ done: number; total: number }>({
+    done: 0,
+    total: 0,
+  })
+
+
+  const selectedDataset = datasets.find((d) => d.id === selectedDatasetId)
+  const selectedGraders = graders.filter((g) =>
+    selectedGraderIds.includes(g.id)
+  )
+
+  function toggleGrader(graderId: string) {
+    setSelectedGraderIds((prev) =>
+      prev.includes(graderId)
+        ? prev.filter((id) => id !== graderId)
+        : [...prev, graderId]
+    )
+  }
+
+  function runExperiment() {
+    if (!selectedDataset || selectedGraders.length === 0) return
+
+    setRunning(true)
+    const results: Record<string, Record<string, GradeResult>> = {}
+    const totalTasks =
+      selectedDataset.testCases.length * selectedGraders.length
+
+    let completedCount = 0
+
+    for (const tc of selectedDataset.testCases) {
+      results[tc.id] = {}
+      for (const grader of selectedGraders) {
+        results[tc.id][grader.id] = runLocalGrade(grader, tc)
+        completedCount++
+      }
+    }
+
+    setProgress({ done: completedCount, total: totalTasks })
+
+    const experiment: ExperimentResult = {
+      id: generateId(),
+      datasetId: selectedDataset.id,
+      graderIds: selectedGraderIds,
+      results,
+      createdAt: new Date(),
+    }
+
+    appStore.addExperiment(experiment)
+    setLatestExperiment(experiment)
+    setRunning(false)
+  }
+
+  const canRun =
+    selectedDataset &&
+    selectedDataset.testCases.length > 0 &&
+    selectedGraders.length > 0
+
+  // Empty state
+  if (datasets.length === 0 || graders.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24">
+        <div className="rounded-full bg-muted p-4 mb-4">
+          <Beaker className="size-8 text-muted-foreground" />
+        </div>
+        <h2 className="text-xl font-semibold tracking-tight text-foreground mb-2">
+          Not ready to run experiments
+        </h2>
+        <p className="text-muted-foreground text-sm mb-2 max-w-md text-center leading-relaxed">
+          {datasets.length === 0 && graders.length === 0
+            ? "Create a dataset and at least one grader first."
+            : datasets.length === 0
+              ? "Create a dataset with test cases first."
+              : "Create at least one grader first."}
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      {/* Configuration panel */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Configuration</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-col gap-5">
+            {/* Dataset selector */}
+            <div className="flex flex-col gap-2">
+              <Label>Dataset</Label>
+              <Select
+                value={selectedDatasetId}
+                onValueChange={setSelectedDatasetId}
+              >
+                <SelectTrigger className="w-full sm:w-[300px]">
+                  <SelectValue placeholder="Select a dataset" />
+                </SelectTrigger>
+                <SelectContent>
+                  {datasets.map((d) => (
+                    <SelectItem key={d.id} value={d.id}>
+                      {d.name} ({d.testCases.length} test
+                      {d.testCases.length !== 1 ? "s" : ""})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Grader multi-select */}
+            <div className="flex flex-col gap-2">
+              <Label>Graders</Label>
+              <div className="flex flex-wrap gap-3">
+                {graders.map((g) => (
+                  <label
+                    key={g.id}
+                    className="flex items-center gap-2 cursor-pointer"
+                  >
+                    <Checkbox
+                      checked={selectedGraderIds.includes(g.id)}
+                      onCheckedChange={() => toggleGrader(g.id)}
+                    />
+                    <span className="text-sm text-foreground">{g.name}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Run button */}
+            <div className="flex items-center gap-4">
+              <Button
+                size="lg"
+                disabled={!canRun || running}
+                onClick={runExperiment}
+              >
+                {running ? (
+                  <>
+                    <Spinner className="size-4" />
+                    Running ({progress.done}/{progress.total})
+                  </>
+                ) : (
+                  <>
+                    <Play className="size-4" />
+                    Run Experiment
+                  </>
+                )}
+              </Button>
+              {running && (
+                <p className="text-sm text-muted-foreground">
+                  Evaluating test cases...
+                </p>
+              )}
+            </div>
+
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Results */}
+      {latestExperiment && selectedDataset && (
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-base font-semibold tracking-tight text-foreground">
+              Results
+            </h3>
+            <SummaryStats experiment={latestExperiment} />
+          </div>
+
+          <div className="rounded-lg border border-border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/50">
+                  <TableHead className="w-10 text-center">#</TableHead>
+                  <TableHead>Input</TableHead>
+                  <TableHead>Expected</TableHead>
+                  {selectedGraders.map((g) => (
+                    <TableHead key={g.id} className="text-center">
+                      {g.name}
+                    </TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {selectedDataset.testCases.map((tc, idx) => (
+                  <TableRow key={tc.id}>
+                    <TableCell className="text-center text-muted-foreground text-xs font-mono">
+                      {idx + 1}
+                    </TableCell>
+                    <TableCell className="max-w-[200px] truncate text-sm">
+                      {tc.input}
+                    </TableCell>
+                    <TableCell className="max-w-[200px] truncate text-sm">
+                      {tc.expectedOutput}
+                    </TableCell>
+                    {selectedGraders.map((g) => (
+                      <TableCell key={g.id} className="text-center">
+                        {latestExperiment.results[tc.id]?.[g.id] ? (
+                          <PassFailBadge
+                            result={latestExperiment.results[tc.id][g.id]}
+                          />
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            --
+                          </span>
+                        )}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
