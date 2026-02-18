@@ -27,71 +27,9 @@ import {
 } from "@/components/ui/tooltip"
 import { Label } from "@/components/ui/label"
 import { Play, CheckCircle2, XCircle, Beaker, Loader2 } from "lucide-react"
-import { generateId, runLocalGrade, isBuiltinGrader } from "@/lib/store"
-import { llmGraderEvaluate, llmReasonExplain } from "@/lib/llm-grader"
+import { generateId } from "@/lib/store"
 import type { ExperimentResult, GradeResult } from "@/lib/store"
-import type { Grader, TestCase } from "@/hooks/use-store"
-
-// ─── Grade a single test-case with a single grader ───────────────────────────
-// Routes to the right pathway based on grader type.
-
-async function gradeOne(grader: Grader, tc: TestCase): Promise<GradeResult> {
-  if (grader.type === "llm") {
-    // LLM grader: LLM decides pass/fail AND writes reason
-    return llmGraderEvaluate(
-      tc.input,
-      tc.expectedOutput,
-      tc.expectedOutput, // actual output == expected output in dataset context
-      grader.name,
-      grader.rubric,
-    )
-  }
-
-  if (isBuiltinGrader(grader.type)) {
-    // Built-in: deterministic pass/fail, then enrich reason via LLM
-    // Cast to lib/store Grader shape for runLocalGrade
-    const libGrader = {
-      id: grader.id,
-      name: grader.name,
-      description: grader.description,
-      rubric: grader.rubric,
-      type: grader.type,
-      createdAt: new Date(),
-    }
-    const libTc = {
-      id: tc.id,
-      input: tc.input,
-      expectedOutput: tc.expectedOutput,
-      customFields: tc.customFields,
-    }
-    const det = runLocalGrade(libGrader, libTc)
-
-    // Enrich with LLM-generated reason (fallback to deterministic if API fails)
-    const graderTypeLabels: Record<string, string> = {
-      "exact-match": "case-insensitive exact match against the expected answer",
-      "numeric-tolerance": "numeric extraction with ±10% tolerance",
-      "contains": `output must contain the keyword "${grader.rubric}"`,
-      "regex": `output must match the regex pattern /${grader.rubric}/i`,
-      "shorter-than-input": "output must be shorter in character length than the input",
-      "not-empty": "output must not be empty or whitespace-only",
-    }
-    const ruleDesc = graderTypeLabels[grader.type] ?? grader.type
-
-    const reason = await llmReasonExplain(
-      tc.input,
-      tc.expectedOutput,
-      tc.expectedOutput,
-      det.pass,
-      grader.name,
-      ruleDesc,
-    )
-
-    return { pass: det.pass, reason }
-  }
-
-  // Unknown type fallback
-  return { pass: false, reason: "Unknown grader type." }
-}
+import type { GradeResultPayload } from "@/app/api/grade/route"
 
 // ─── UI Components ────────────────────────────────────────────────────────────
 
@@ -150,6 +88,7 @@ export function ExperimentRunner() {
   const [running, setRunning] = useState(false)
   const [latestExperiment, setLatestExperiment] = useState<ExperimentResult | null>(null)
   const [progress, setProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 })
+  const [error, setError] = useState<string | null>(null)
 
   const selectedDataset = datasets.find((d) => d.id === selectedDatasetId)
   const selectedGraders = graders.filter((g) => selectedGraderIds.includes(g.id))
@@ -164,30 +103,51 @@ export function ExperimentRunner() {
     if (!selectedDataset || selectedGraders.length === 0) return
 
     setRunning(true)
-    setProgress({ done: 0, total: selectedDataset.testCases.length * selectedGraders.length })
+    setError(null)
+    const total = selectedDataset.testCases.length * selectedGraders.length
+    setProgress({ done: 0, total })
 
-    const results: Record<string, Record<string, GradeResult>> = {}
-    let completedCount = 0
+    try {
+      const response = await fetch("/api/grade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          testCases: selectedDataset.testCases,
+          graders: selectedGraders,
+        }),
+      })
 
-    for (const tc of selectedDataset.testCases) {
-      results[tc.id] = {}
-      for (const grader of selectedGraders) {
-        results[tc.id][grader.id] = await gradeOne(grader, tc)
-        completedCount++
-        setProgress((p) => ({ ...p, done: completedCount }))
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(body.error ?? `Server error ${response.status}`)
       }
-    }
 
-    const experiment: ExperimentResult = {
-      id: generateId(),
-      datasetId: selectedDataset.id,
-      graderIds: selectedGraderIds,
-      results,
-      createdAt: new Date(),
-    }
+      const { results } = await response.json() as { results: GradeResultPayload[] }
 
-    setLatestExperiment(experiment)
-    setRunning(false)
+      // Build the nested results map: testCaseId → graderId → GradeResult
+      const resultsMap: Record<string, Record<string, GradeResult>> = {}
+      for (const r of results) {
+        if (!resultsMap[r.testCaseId]) resultsMap[r.testCaseId] = {}
+        resultsMap[r.testCaseId][r.graderId] = { pass: r.pass, reason: r.reason }
+      }
+
+      setProgress({ done: total, total })
+
+      const experiment: ExperimentResult = {
+        id: generateId(),
+        datasetId: selectedDataset.id,
+        graderIds: selectedGraderIds,
+        results: resultsMap,
+        createdAt: new Date(),
+      }
+
+      setLatestExperiment(experiment)
+    } catch (err) {
+      console.error("[runExperiment]", err)
+      setError(err instanceof Error ? err.message : "Failed to run experiment")
+    } finally {
+      setRunning(false)
+    }
   }
 
   const canRun =
@@ -275,11 +235,16 @@ export function ExperimentRunner() {
                 )}
               </Button>
               {running && (
-                <p className="text-sm text-muted-foreground">
-                  Evaluating test cases…
-                </p>
+                <p className="text-sm text-muted-foreground">Evaluating test cases…</p>
               )}
             </div>
+
+            {/* Error state */}
+            {error && (
+              <p className="text-sm text-destructive rounded-md bg-destructive/10 px-3 py-2">
+                {error}
+              </p>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -309,7 +274,6 @@ export function ExperimentRunner() {
               </TableHeader>
               <TableBody>
                 {selectedDataset.testCases.map((tc, idx) => {
-                  // Collect all reasons for this test case (one per grader)
                   const reasonParts = selectedGraders
                     .map((g) => {
                       const r = latestExperiment.results[tc.id]?.[g.id]
