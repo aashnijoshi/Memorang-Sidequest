@@ -26,7 +26,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { Label } from "@/components/ui/label"
-import { Play, CheckCircle2, XCircle, Beaker } from "lucide-react"
+import { Play, CheckCircle2, XCircle, Beaker, Loader2 } from "lucide-react"
 import { generateId, runLocalGrade } from "@/lib/store"
 import type { ExperimentResult, GradeResult } from "@/lib/store"
 
@@ -87,7 +87,7 @@ function SummaryStats({
 }
 
 export function ExperimentRunner() {
-  const { datasets, graders, store: appStore } = useStore()
+  const { datasets, graders } = useStore()
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("")
   const [selectedGraderIds, setSelectedGraderIds] = useState<string[]>([])
   const [running, setRunning] = useState(false)
@@ -140,7 +140,6 @@ export function ExperimentRunner() {
       createdAt: new Date(),
     }
 
-    appStore.addExperiment(experiment)
     setLatestExperiment(experiment)
     setRunning(false)
   }
@@ -229,7 +228,7 @@ export function ExperimentRunner() {
               >
                 {running ? (
                   <>
-                    <Spinner className="size-4" />
+                    <Loader2 className="size-4 animate-spin" />
                     Running ({progress.done}/{progress.total})
                   </>
                 ) : (
