@@ -5,6 +5,7 @@ import { Header } from "@/components/header"
 import { Footer } from "@/components/footer"
 import { GradersLibrary } from "@/components/graders-library"
 import { ExperimentRunner } from "@/components/experiment-runner"
+import { DatasetManager } from "@/components/dataset-manager"
 
 const sectionTitles: Record<string, { title: string; description: string }> = {
   datasets: {
@@ -38,6 +39,7 @@ export default function Page() {
               {section.description}
             </p>
           </div>
+          {activeTab === "datasets" && <DatasetManager />}
           {activeTab === "graders" && <GradersLibrary />}
           {activeTab === "experiment" && <ExperimentRunner />}
         </div>

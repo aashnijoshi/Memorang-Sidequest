@@ -28,7 +28,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import { Plus, Trash2, Database, Columns3 } from "lucide-react"
-import type { Dataset } from "@/lib/store"
+import type { Dataset } from "@/hooks/use-store"
 
 function EditableCell({
   value,
