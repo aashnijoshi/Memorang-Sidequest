@@ -3,7 +3,6 @@
 import { useState } from "react"
 import { Header } from "@/components/header"
 import { Footer } from "@/components/footer"
-import { DatasetManager } from "@/components/dataset-manager"
 import { GradersLibrary } from "@/components/graders-library"
 import { ExperimentRunner } from "@/components/experiment-runner"
 
@@ -39,8 +38,6 @@ export default function Page() {
               {section.description}
             </p>
           </div>
-
-          {activeTab === "datasets" && <DatasetManager />}
           {activeTab === "graders" && <GradersLibrary />}
           {activeTab === "experiment" && <ExperimentRunner />}
         </div>
