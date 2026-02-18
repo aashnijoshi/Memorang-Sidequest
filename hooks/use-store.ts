@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { GraderType, ExperimentResult } from '@/lib/store';
 
 // Test case within a dataset
 export interface TestCase {
@@ -17,13 +18,13 @@ export interface Dataset {
   createdAt: string;
 }
 
-// Grader definition
+// Grader definition — type is aligned with lib/store GraderType
 export interface Grader {
   id: string;
   name: string;
   description: string;
   rubric: string;
-  type: string;
+  type: GraderType;
 }
 
 // Result from evaluation
@@ -39,7 +40,8 @@ interface StoreState {
   datasets: Dataset[];
   graders: Grader[];
   results: Result[];
-  
+  experiments: ExperimentResult[];
+
   // Store object with methods
   store: {
     addDataset: (name: string) => Dataset;
@@ -49,20 +51,48 @@ interface StoreState {
     deleteTestCase: (datasetId: string, testCaseId: string) => void;
     addCustomColumn: (datasetId: string, columnName: string) => void;
     removeCustomColumn: (datasetId: string, columnName: string) => void;
-    
-    addGrader: (name: string, description: string, rubric: string, type: string) => void;
+
+    addGrader: (name: string, description: string, rubric: string, type: GraderType) => void;
     updateGrader: (id: string, updates: Partial<Grader>) => void;
     deleteGrader: (id: string) => void;
-    
+
     setResults: (results: Result[]) => void;
+    addExperiment: (experiment: ExperimentResult) => void;
   };
 }
 
+// Bootstrap Zustand store from the lib/store singleton seed data on first load
+import { store as libStore } from '@/lib/store';
+
+function seedFromLibStore() {
+  return {
+    datasets: libStore.datasets.map((d) => ({
+      id: d.id,
+      name: d.name,
+      testCases: d.testCases.map((tc) => ({
+        id: tc.id,
+        input: tc.input,
+        expectedOutput: tc.expectedOutput,
+        customFields: tc.customFields,
+      })),
+      customColumns: d.customColumns,
+      createdAt: d.createdAt instanceof Date ? d.createdAt.toISOString() : String(d.createdAt),
+    })),
+    graders: libStore.graders.map((g) => ({
+      id: g.id,
+      name: g.name,
+      description: g.description,
+      rubric: g.rubric,
+      type: g.type,
+    })),
+  }
+}
+
 export const useStore = create<StoreState>((set, get) => ({
-  datasets: [],
-  graders: [],
+  ...seedFromLibStore(),
   results: [],
-  
+  experiments: [],
+
   store: {
     // Dataset methods
     addDataset: (name: string) => {
@@ -198,6 +228,13 @@ export const useStore = create<StoreState>((set, get) => ({
     // Results methods
     setResults: (results: Result[]) => {
       set({ results });
+    },
+
+    // Experiment methods
+    addExperiment: (experiment: ExperimentResult) => {
+      set((state) => ({
+        experiments: [...state.experiments, experiment],
+      }));
     },
   },
 }));

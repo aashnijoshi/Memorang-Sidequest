@@ -15,14 +15,24 @@ export interface Dataset {
   createdAt: Date
 }
 
-export type GraderType = "exact-match" | "contains" | "regex" | "shorter-than-input" | "not-empty"
+export type GraderType = "exact-match" | "contains" | "regex" | "shorter-than-input" | "not-empty" | "numeric-tolerance" | "llm"
+
+export const BUILTIN_GRADER_TYPES: GraderType[] = [
+  "exact-match", "contains", "regex", "shorter-than-input", "not-empty", "numeric-tolerance",
+]
+
+export function isBuiltinGrader(type: GraderType): boolean {
+  return BUILTIN_GRADER_TYPES.includes(type)
+}
 
 export const GRADER_TYPES: { value: GraderType; label: string; description: string }[] = [
-  { value: "exact-match", label: "Exact Match", description: "Output must exactly equal the expected output" },
-  { value: "contains", label: "Contains", description: "Output must contain the expected output as a substring" },
+  { value: "exact-match", label: "Exact Match", description: "Output must exactly equal the expected output (case-insensitive, trimmed)" },
+  { value: "contains", label: "Contains", description: "Output must contain the keyword in the rubric field" },
   { value: "regex", label: "Regex", description: "Output must match the regex pattern in the rubric field" },
+  { value: "numeric-tolerance", label: "Numeric Tolerance", description: "Extracts numbers and checks they are within ±10% of expected (good for physics answers)" },
   { value: "shorter-than-input", label: "Shorter Than Input", description: "Output must be shorter in length than the input" },
   { value: "not-empty", label: "Not Empty", description: "Output must not be empty or whitespace-only" },
+  { value: "llm", label: "LLM Grader", description: "Claude evaluates pass/fail and explains based on your rubric/instructions" },
 ]
 
 export interface Grader {
@@ -212,22 +222,35 @@ export const store = new Store()
 
 // --- Deterministic local grading ---
 
+/** Extract all numeric values from a string */
+function extractNumbers(s: string): number[] {
+  const matches = s.match(/-?\d+(\.\d+)?/g)
+  return matches ? matches.map(Number) : []
+}
+
+/**
+ * Deterministic local grader — runs synchronously, no API calls.
+ * Returns { pass, reason } with a short deterministic reason string.
+ * The reason is later enriched by the LLM via llm_reason_explain().
+ *
+ * NOTE: for type "llm", this should NOT be called — use llmGraderEvaluate() instead.
+ */
 export function runLocalGrade(
   grader: Grader,
   testCase: TestCase
 ): GradeResult {
   const { input, expectedOutput } = testCase
-  const output = expectedOutput.trim()
+  const actual = expectedOutput.trim()
   const inp = input.trim()
 
   switch (grader.type) {
     case "exact-match": {
-      const pass = output === inp || output === expectedOutput
+      const pass = actual.toLowerCase() === expectedOutput.trim().toLowerCase()
       return {
-        pass: output.length > 0 && output === expectedOutput.trim(),
+        pass,
         reason: pass
-          ? "Output exactly matches expected output."
-          : `Output does not exactly match. Expected "${expectedOutput.trim()}", got "${output}".`,
+          ? `Exact match: output matches expected (case-insensitive).`
+          : `Exact match failed. Expected "${expectedOutput.trim()}", got "${actual}".`,
       }
     }
     case "contains": {
@@ -235,12 +258,12 @@ export function runLocalGrade(
       if (!keyword) {
         return { pass: false, reason: "Rubric (keyword) is empty." }
       }
-      const pass = output.toLowerCase().includes(keyword)
+      const pass = actual.toLowerCase().includes(keyword)
       return {
         pass,
         reason: pass
-          ? `Output contains "${grader.rubric.trim()}".`
-          : `Output does not contain "${grader.rubric.trim()}".`,
+          ? `Output contains keyword "${grader.rubric.trim()}".`
+          : `Output does not contain keyword "${grader.rubric.trim()}".`,
       }
     }
     case "regex": {
@@ -250,7 +273,7 @@ export function runLocalGrade(
       }
       try {
         const re = new RegExp(pattern, "i")
-        const pass = re.test(output)
+        const pass = re.test(actual)
         return {
           pass,
           reason: pass
@@ -261,24 +284,46 @@ export function runLocalGrade(
         return { pass: false, reason: `Invalid regex pattern: ${pattern}` }
       }
     }
-    case "shorter-than-input": {
-      const pass = output.length < inp.length && output.length > 0
+    case "numeric-tolerance": {
+      const expectedNums = extractNumbers(expectedOutput)
+      const actualNums = extractNumbers(actual)
+      if (expectedNums.length === 0) {
+        return { pass: false, reason: "No numeric value found in expected output." }
+      }
+      if (actualNums.length === 0) {
+        return { pass: false, reason: `No numeric value found in output. Expected approximately ${expectedNums[0]}.` }
+      }
+      // Compare first numeric value with 10% tolerance
+      const expected = expectedNums[0]
+      const got = actualNums[0]
+      const tolerance = Math.abs(expected) * 0.10 + 0.001 // +0.001 to handle zero
+      const pass = Math.abs(got - expected) <= tolerance
       return {
         pass,
         reason: pass
-          ? `Output (${output.length} chars) is shorter than input (${inp.length} chars).`
-          : `Output (${output.length} chars) is not shorter than input (${inp.length} chars).`,
+          ? `Numeric match: ${got} is within 10% tolerance of expected ${expected}.`
+          : `Numeric mismatch: got ${got}, expected ${expected} (±10% = ±${tolerance.toFixed(3)}).`,
+      }
+    }
+    case "shorter-than-input": {
+      const pass = actual.length < inp.length && actual.length > 0
+      return {
+        pass,
+        reason: pass
+          ? `Output (${actual.length} chars) is shorter than input (${inp.length} chars).`
+          : `Output (${actual.length} chars) is not shorter than input (${inp.length} chars).`,
       }
     }
     case "not-empty": {
-      const pass = output.length > 0
+      const pass = actual.length > 0
       return {
         pass,
-        reason: pass
-          ? "Output is not empty."
-          : "Output is empty.",
+        reason: pass ? "Output is not empty." : "Output is empty.",
       }
     }
+    case "llm":
+      // LLM graders must go through llmGraderEvaluate() in lib/llm-grader.ts
+      return { pass: false, reason: "LLM grader requires async evaluation — use llmGraderEvaluate()." }
     default:
       return { pass: false, reason: "Unknown grader type." }
   }
@@ -286,46 +331,48 @@ export function runLocalGrade(
 
 // --- Seed data ---
 
-const exampleDataset = store.addDataset("Summarization QA")
-const cases = [
+// Physics starter dataset
+const physicsDataset = store.addDataset("Physics Starter Dataset")
+const physicsCases = [
   {
-    input: "The mitochondria is the powerhouse of the cell. It produces ATP through cellular respiration, converting glucose and oxygen into energy.",
-    expectedOutput: "Mitochondria produce ATP via cellular respiration, converting glucose and oxygen into energy.",
+    input: "What is the SI unit of force?",
+    expectedOutput: "Newton (N)",
   },
   {
-    input: "Water boils at 100 degrees Celsius at standard atmospheric pressure. At higher altitudes, water boils at lower temperatures due to decreased air pressure.",
-    expectedOutput: "Water boils at 100C at standard pressure but at lower temperatures at higher altitudes due to reduced air pressure.",
+    input: "A 2 kg object accelerates at 3 m/s². What net force acts on it?",
+    expectedOutput: "6 N",
   },
   {
-    input: "Photosynthesis is the process by which green plants use sunlight, water, and carbon dioxide to create oxygen and glucose. It primarily occurs in the leaves.",
-    expectedOutput: "Photosynthesis converts sunlight, water, and CO2 into oxygen and glucose, mainly in plant leaves.",
+    input: "What is the relationship between electric potential difference, current, and resistance?",
+    expectedOutput: "V = IR",
   },
 ]
-for (const c of cases) {
-  const tc = store.addTestCase(exampleDataset.id)
-  store.updateTestCase(exampleDataset.id, tc.id, {
+for (const c of physicsCases) {
+  const tc = store.addTestCase(physicsDataset.id)
+  store.updateTestCase(physicsDataset.id, tc.id, {
     input: c.input,
     expectedOutput: c.expectedOutput,
   })
 }
 
+// Built-in graders
 store.addGrader(
-  "Is Concise",
-  "Checks that the expected output is shorter than the input.",
+  "Exact Match",
+  "Checks that the output exactly matches the expected answer (case-insensitive, trimmed).",
   "",
-  "shorter-than-input"
+  "exact-match"
 )
 
 store.addGrader(
-  "Not Empty",
-  "Checks that the expected output is not empty or whitespace.",
+  "Numeric Tolerance",
+  "Extracts numeric values and checks they are within ±10% of the expected number. Good for physics calculations.",
   "",
-  "not-empty"
+  "numeric-tolerance"
 )
 
 store.addGrader(
-  "Mentions Energy",
-  "Checks that the expected output mentions the word 'energy'.",
-  "energy",
+  "Contains Key Concept",
+  "Checks that the output contains the key term or formula defined in the rubric.",
+  "V = IR",
   "contains"
 )
