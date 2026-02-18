@@ -27,14 +27,75 @@ import {
 } from "@/components/ui/tooltip"
 import { Label } from "@/components/ui/label"
 import { Play, CheckCircle2, XCircle, Beaker, Loader2 } from "lucide-react"
-import { generateId, runLocalGrade } from "@/lib/store"
+import { generateId, runLocalGrade, isBuiltinGrader } from "@/lib/store"
+import { llmGraderEvaluate, llmReasonExplain } from "@/lib/llm-grader"
 import type { ExperimentResult, GradeResult } from "@/lib/store"
+import type { Grader, TestCase } from "@/hooks/use-store"
 
-function PassFailBadge({
-  result,
-}: {
-  result: GradeResult
-}) {
+// ─── Grade a single test-case with a single grader ───────────────────────────
+// Routes to the right pathway based on grader type.
+
+async function gradeOne(grader: Grader, tc: TestCase): Promise<GradeResult> {
+  if (grader.type === "llm") {
+    // LLM grader: LLM decides pass/fail AND writes reason
+    return llmGraderEvaluate(
+      tc.input,
+      tc.expectedOutput,
+      tc.expectedOutput, // actual output == expected output in dataset context
+      grader.name,
+      grader.rubric,
+    )
+  }
+
+  if (isBuiltinGrader(grader.type)) {
+    // Built-in: deterministic pass/fail, then enrich reason via LLM
+    // Cast to lib/store Grader shape for runLocalGrade
+    const libGrader = {
+      id: grader.id,
+      name: grader.name,
+      description: grader.description,
+      rubric: grader.rubric,
+      type: grader.type,
+      createdAt: new Date(),
+    }
+    const libTc = {
+      id: tc.id,
+      input: tc.input,
+      expectedOutput: tc.expectedOutput,
+      customFields: tc.customFields,
+    }
+    const det = runLocalGrade(libGrader, libTc)
+
+    // Enrich with LLM-generated reason (fallback to deterministic if API fails)
+    const graderTypeLabels: Record<string, string> = {
+      "exact-match": "case-insensitive exact match against the expected answer",
+      "numeric-tolerance": "numeric extraction with ±10% tolerance",
+      "contains": `output must contain the keyword "${grader.rubric}"`,
+      "regex": `output must match the regex pattern /${grader.rubric}/i`,
+      "shorter-than-input": "output must be shorter in character length than the input",
+      "not-empty": "output must not be empty or whitespace-only",
+    }
+    const ruleDesc = graderTypeLabels[grader.type] ?? grader.type
+
+    const reason = await llmReasonExplain(
+      tc.input,
+      tc.expectedOutput,
+      tc.expectedOutput,
+      det.pass,
+      grader.name,
+      ruleDesc,
+    )
+
+    return { pass: det.pass, reason }
+  }
+
+  // Unknown type fallback
+  return { pass: false, reason: "Unknown grader type." }
+}
+
+// ─── UI Components ────────────────────────────────────────────────────────────
+
+function PassFailBadge({ result }: { result: GradeResult }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -59,11 +120,7 @@ function PassFailBadge({
   )
 }
 
-function SummaryStats({
-  experiment,
-}: {
-  experiment: ExperimentResult
-}) {
+function SummaryStats({ experiment }: { experiment: ExperimentResult }) {
   let total = 0
   let passed = 0
 
@@ -78,59 +135,48 @@ function SummaryStats({
 
   return (
     <div className="flex items-center gap-4 text-sm">
-      <span className="font-medium text-foreground">
-        {passed}/{total} passed
-      </span>
+      <span className="font-medium text-foreground">{passed}/{total} passed</span>
       <span className="text-muted-foreground">({rate}%)</span>
     </div>
   )
 }
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 
 export function ExperimentRunner() {
   const { datasets, graders } = useStore()
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("")
   const [selectedGraderIds, setSelectedGraderIds] = useState<string[]>([])
   const [running, setRunning] = useState(false)
-  const [latestExperiment, setLatestExperiment] =
-    useState<ExperimentResult | null>(null)
-  const [progress, setProgress] = useState<{ done: number; total: number }>({
-    done: 0,
-    total: 0,
-  })
-
+  const [latestExperiment, setLatestExperiment] = useState<ExperimentResult | null>(null)
+  const [progress, setProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 })
 
   const selectedDataset = datasets.find((d) => d.id === selectedDatasetId)
-  const selectedGraders = graders.filter((g) =>
-    selectedGraderIds.includes(g.id)
-  )
+  const selectedGraders = graders.filter((g) => selectedGraderIds.includes(g.id))
 
   function toggleGrader(graderId: string) {
     setSelectedGraderIds((prev) =>
-      prev.includes(graderId)
-        ? prev.filter((id) => id !== graderId)
-        : [...prev, graderId]
+      prev.includes(graderId) ? prev.filter((id) => id !== graderId) : [...prev, graderId]
     )
   }
 
-  function runExperiment() {
+  async function runExperiment() {
     if (!selectedDataset || selectedGraders.length === 0) return
 
     setRunning(true)
-    const results: Record<string, Record<string, GradeResult>> = {}
-    const totalTasks =
-      selectedDataset.testCases.length * selectedGraders.length
+    setProgress({ done: 0, total: selectedDataset.testCases.length * selectedGraders.length })
 
+    const results: Record<string, Record<string, GradeResult>> = {}
     let completedCount = 0
 
     for (const tc of selectedDataset.testCases) {
       results[tc.id] = {}
       for (const grader of selectedGraders) {
-        results[tc.id][grader.id] = runLocalGrade(grader, tc)
+        results[tc.id][grader.id] = await gradeOne(grader, tc)
         completedCount++
+        setProgress((p) => ({ ...p, done: completedCount }))
       }
     }
-
-    setProgress({ done: completedCount, total: totalTasks })
 
     const experiment: ExperimentResult = {
       id: generateId(),
@@ -145,9 +191,7 @@ export function ExperimentRunner() {
   }
 
   const canRun =
-    selectedDataset &&
-    selectedDataset.testCases.length > 0 &&
-    selectedGraders.length > 0
+    selectedDataset && selectedDataset.testCases.length > 0 && selectedGraders.length > 0
 
   // Empty state
   if (datasets.length === 0 || graders.length === 0) {
@@ -182,18 +226,14 @@ export function ExperimentRunner() {
             {/* Dataset selector */}
             <div className="flex flex-col gap-2">
               <Label>Dataset</Label>
-              <Select
-                value={selectedDatasetId}
-                onValueChange={setSelectedDatasetId}
-              >
+              <Select value={selectedDatasetId} onValueChange={setSelectedDatasetId}>
                 <SelectTrigger className="w-full sm:w-[300px]">
                   <SelectValue placeholder="Select a dataset" />
                 </SelectTrigger>
                 <SelectContent>
                   {datasets.map((d) => (
                     <SelectItem key={d.id} value={d.id}>
-                      {d.name} ({d.testCases.length} test
-                      {d.testCases.length !== 1 ? "s" : ""})
+                      {d.name} ({d.testCases.length} test{d.testCases.length !== 1 ? "s" : ""})
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -205,15 +245,15 @@ export function ExperimentRunner() {
               <Label>Graders</Label>
               <div className="flex flex-wrap gap-3">
                 {graders.map((g) => (
-                  <label
-                    key={g.id}
-                    className="flex items-center gap-2 cursor-pointer"
-                  >
+                  <label key={g.id} className="flex items-center gap-2 cursor-pointer">
                     <Checkbox
                       checked={selectedGraderIds.includes(g.id)}
                       onCheckedChange={() => toggleGrader(g.id)}
                     />
                     <span className="text-sm text-foreground">{g.name}</span>
+                    {g.type === "llm" && (
+                      <span className="text-xs text-muted-foreground">(LLM)</span>
+                    )}
                   </label>
                 ))}
               </div>
@@ -221,11 +261,7 @@ export function ExperimentRunner() {
 
             {/* Run button */}
             <div className="flex items-center gap-4">
-              <Button
-                size="lg"
-                disabled={!canRun || running}
-                onClick={runExperiment}
-              >
+              <Button size="lg" disabled={!canRun || running} onClick={runExperiment}>
                 {running ? (
                   <>
                     <Loader2 className="size-4 animate-spin" />
@@ -240,11 +276,10 @@ export function ExperimentRunner() {
               </Button>
               {running && (
                 <p className="text-sm text-muted-foreground">
-                  Evaluating test cases...
+                  Evaluating test cases…
                 </p>
               )}
             </div>
-
           </div>
         </CardContent>
       </Card>
@@ -253,13 +288,11 @@ export function ExperimentRunner() {
       {latestExperiment && selectedDataset && (
         <div className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
-            <h3 className="text-base font-semibold tracking-tight text-foreground">
-              Results
-            </h3>
+            <h3 className="text-base font-semibold tracking-tight text-foreground">Results</h3>
             <SummaryStats experiment={latestExperiment} />
           </div>
 
-          <div className="rounded-lg border border-border overflow-hidden">
+          <div className="rounded-lg border border-border overflow-auto">
             <Table>
               <TableHeader>
                 <TableRow className="bg-muted/50">
@@ -267,39 +300,58 @@ export function ExperimentRunner() {
                   <TableHead>Input</TableHead>
                   <TableHead>Expected</TableHead>
                   {selectedGraders.map((g) => (
-                    <TableHead key={g.id} className="text-center">
+                    <TableHead key={g.id} className="text-center min-w-[110px]">
                       {g.name}
                     </TableHead>
                   ))}
+                  <TableHead className="min-w-[260px]">Reason</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {selectedDataset.testCases.map((tc, idx) => (
-                  <TableRow key={tc.id}>
-                    <TableCell className="text-center text-muted-foreground text-xs font-mono">
-                      {idx + 1}
-                    </TableCell>
-                    <TableCell className="max-w-[200px] truncate text-sm">
-                      {tc.input}
-                    </TableCell>
-                    <TableCell className="max-w-[200px] truncate text-sm">
-                      {tc.expectedOutput}
-                    </TableCell>
-                    {selectedGraders.map((g) => (
-                      <TableCell key={g.id} className="text-center">
-                        {latestExperiment.results[tc.id]?.[g.id] ? (
-                          <PassFailBadge
-                            result={latestExperiment.results[tc.id][g.id]}
-                          />
+                {selectedDataset.testCases.map((tc, idx) => {
+                  // Collect all reasons for this test case (one per grader)
+                  const reasonParts = selectedGraders
+                    .map((g) => {
+                      const r = latestExperiment.results[tc.id]?.[g.id]
+                      if (!r) return null
+                      return `[${g.name}] ${r.reason}`
+                    })
+                    .filter(Boolean)
+
+                  return (
+                    <TableRow key={tc.id}>
+                      <TableCell className="text-center text-muted-foreground text-xs font-mono">
+                        {idx + 1}
+                      </TableCell>
+                      <TableCell className="max-w-[200px] truncate text-sm">
+                        {tc.input}
+                      </TableCell>
+                      <TableCell className="max-w-[200px] truncate text-sm">
+                        {tc.expectedOutput}
+                      </TableCell>
+                      {selectedGraders.map((g) => (
+                        <TableCell key={g.id} className="text-center">
+                          {latestExperiment.results[tc.id]?.[g.id] ? (
+                            <PassFailBadge result={latestExperiment.results[tc.id][g.id]} />
+                          ) : (
+                            <span className="text-xs text-muted-foreground">--</span>
+                          )}
+                        </TableCell>
+                      ))}
+                      <TableCell className="text-xs text-muted-foreground leading-relaxed align-top py-3">
+                        {reasonParts.length > 0 ? (
+                          <div className="flex flex-col gap-2">
+                            {reasonParts.map((r, i) => (
+                              <p key={i} className="whitespace-pre-wrap">{r}</p>
+                            ))}
+                          </div>
                         ) : (
-                          <span className="text-xs text-muted-foreground">
-                            --
-                          </span>
+                          <span>--</span>
                         )}
                       </TableCell>
-                    ))}
-                  </TableRow>
-                ))}
+                    </TableRow>
+                  )
+                })}
               </TableBody>
             </Table>
           </div>
