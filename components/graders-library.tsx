@@ -22,8 +22,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
-import { Plus, Pencil, Trash2, Scale } from "lucide-react"
+import { Plus, Pencil, Trash2, Scale, Sparkles } from "lucide-react"
 import { GRADER_TYPES } from "@/lib/store"
 import type { Grader, GraderType } from "@/lib/store"
 
@@ -86,11 +87,17 @@ function GraderCard({
         {grader.rubric && (
           <div className="rounded-md bg-muted px-3 py-2">
             <p className="text-xs font-medium text-muted-foreground mb-1">
-              Pattern
+              {grader.type === "llm" ? "Instructions" : "Pattern"}
             </p>
             <pre className="text-xs font-mono text-foreground whitespace-pre-wrap leading-relaxed">
               {grader.rubric}
             </pre>
+          </div>
+        )}
+        {grader.type === "llm" && (
+          <div className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Sparkles className="size-3" />
+            <span>Evaluated by Claude</span>
           </div>
         )}
       </CardContent>
@@ -122,7 +129,9 @@ export function GradersLibrary() {
   }
 
   function handleSave() {
-    if (!form.name.trim() || !form.rubric.trim()) return
+    const rubricRequired = form.type === "contains" || form.type === "regex" || form.type === "llm"
+    if (!form.name.trim()) return
+    if (rubricRequired && !form.rubric.trim()) return
 
     if (editingId) {
       appStore.updateGrader(editingId, {
@@ -239,14 +248,21 @@ function GraderForm({
   setForm: (f: GraderFormState) => void
 }) {
   const selectedType = GRADER_TYPES.find((t) => t.value === form.type)
-  const needsRubric = form.type === "contains" || form.type === "regex"
+  const needsRubric = form.type === "contains" || form.type === "regex" || form.type === "llm"
+
+  const rubricLabel =
+    form.type === "regex" ? "Pattern" :
+    form.type === "llm" ? "Grading Instructions (rubric)" :
+    "Keyword"
 
   const rubricPlaceholder =
     form.type === "contains"
       ? "Keyword to search for in expected output..."
       : form.type === "regex"
         ? "Regex pattern, e.g. \\d+ \\w+"
-        : ""
+        : form.type === "llm"
+          ? "Describe how Claude should decide pass/fail.\nE.g. 'Pass if the answer includes the correct SI unit and value. Fail if units are missing or value is wrong.'"
+          : ""
 
   return (
     <div className="flex flex-col gap-4">
@@ -263,7 +279,7 @@ function GraderForm({
         <Label htmlFor="grader-type">Type</Label>
         <Select
           value={form.type}
-          onValueChange={(val) => setForm({ ...form, type: val as GraderType })}
+          onValueChange={(val) => setForm({ ...form, type: val as GraderType, rubric: "" })}
         >
           <SelectTrigger id="grader-type">
             <SelectValue />
@@ -291,16 +307,24 @@ function GraderForm({
       </div>
       {needsRubric && (
         <div className="flex flex-col gap-2">
-          <Label htmlFor="grader-rubric">
-            {form.type === "regex" ? "Pattern" : "Keyword"}
-          </Label>
-          <Input
-            id="grader-rubric"
-            placeholder={rubricPlaceholder}
-            value={form.rubric}
-            onChange={(e) => setForm({ ...form, rubric: e.target.value })}
-            className="font-mono text-sm"
-          />
+          <Label htmlFor="grader-rubric">{rubricLabel}</Label>
+          {form.type === "llm" ? (
+            <Textarea
+              id="grader-rubric"
+              placeholder={rubricPlaceholder}
+              value={form.rubric}
+              onChange={(e) => setForm({ ...form, rubric: e.target.value })}
+              className="text-sm min-h-[100px] resize-y"
+            />
+          ) : (
+            <Input
+              id="grader-rubric"
+              placeholder={rubricPlaceholder}
+              value={form.rubric}
+              onChange={(e) => setForm({ ...form, rubric: e.target.value })}
+              className="font-mono text-sm"
+            />
+          )}
         </div>
       )}
     </div>
