@@ -36,7 +36,7 @@ const llmGradeSchema = z.object({
   reason: z
     .string()
     .describe(
-      'Feedback starting with "Good attempt — ". Include correct answer, given answer, why it passed/failed, and 1-2 prep tips.'
+      'Give supportive feedback. Include correct answer, given answer, why it passed/failed, and 1-2 prep tips. Be sharp but chill.'
     ),
 });
 
@@ -51,9 +51,20 @@ async function gradeLLM(
       model: anthropic('claude-sonnet-4-20250514'),
       schema: llmGradeSchema,
       temperature: 0,
-      system: `You are an expert AI evaluation grader named "${grader.name}".
-Evaluate the student answer against the expected answer using the grading instructions provided.
-Your reason MUST start with "Good attempt — " even if the answer fails.`,
+      system: `You are a sharp but chill tutor evaluating student answers across any subject.
+
+RUBRIC: ${grader.rubric}
+
+CONSTRAINTS:
+- 1–2 sentences max
+- 40 words or less
+- If CORRECT: clearly explain why it meets the rubric
+- If INCORRECT: say exactly what’s wrong and what the correct idea should be
+- Be specific to the actual content
+- No generic praise
+- Never start with "Good attempt"
+- Avoid robotic phrases
+- Sound natural, slightly gen-z coded but still academically solid`,
       prompt: `QUESTION: ${tc.input}
 EXPECTED ANSWER: ${tc.expectedOutput}
 STUDENT ANSWER: ${tc.expectedOutput}
@@ -116,7 +127,7 @@ async function gradeBuiltin(
     const { text } = await generateText({
       model: anthropic('claude-sonnet-4-20250514'),
       temperature: 0.3,
-      maxTokens: 400,
+      //: 400,
       prompt: `You are a friendly physics tutor providing feedback on a student's answer.
 
 A deterministic grader ("${grader.name}") has already decided: ${det.pass ? 'PASS ✓' : 'FAIL ✗'}
@@ -127,13 +138,16 @@ CORRECT ANSWER: ${tc.expectedOutput}
 STUDENT ANSWER: ${tc.expectedOutput}
 RESULT: ${det.pass ? 'PASS' : 'FAIL'}
 
-Write concise feedback (5-10 lines). Requirements:
-- Start with "Good attempt — " (even if it failed)
-- Mention the correct answer explicitly
-- Mention what was given
-- Explain WHY it ${det.pass ? 'passed' : 'failed'} based on the grader rule
-- Add 1-2 practical prep tips
-
+Write concise feedback (5 to 10 lines) in a smart, slightly gen z tone — supportive but not generic or robotic.
+Requirements:
+Avoid repetitive or template-y openings.
+Clearly state:
+What answer was given.
+What the correct answer is.
+Whether it passed or failed.
+- Explain WHY it ${det.pass ? 'passed' : 'failed'} based on the grader rule (be specific about the rule).
+End with 1 or 2 practical, actionable prep tips.
+Keep it direct, clear, and natural. No cringe, no fluff, no filler.
 DO NOT change the pass/fail decision. Respond with plain text only, no JSON, no markdown.`,
     });
 

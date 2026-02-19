@@ -21,7 +21,7 @@ export function Header({ activeTab, onTabChange }: HeaderProps) {
         <div className="flex items-center gap-2 mr-8">
           <FlaskConical className="size-5 text-primary" />
           <span className="text-base font-semibold tracking-tight text-foreground">
-            Eval Harness
+            Memorang mini
           </span>
         </div>
         <nav className="flex items-center gap-1" role="tablist" aria-label="Main navigation">

@@ -63,7 +63,7 @@ interface StoreState {
 
 // Bootstrap Zustand store from the lib/store singleton seed data on first load
 import { store as libStore } from '@/lib/store';
-
+export type { GraderType } from '@/lib/store';
 function seedFromLibStore() {
   return {
     datasets: libStore.datasets.map((d) => ({
@@ -197,7 +197,7 @@ export const useStore = create<StoreState>((set, get) => ({
     },
     
     // Grader methods
-    addGrader: (name: string, description: string, rubric: string, type: string) => {
+    addGrader: (name: string, description: string, rubric: string, type: GraderType) => {
       const newGrader: Grader = {
         id: Date.now().toString(),
         name,
