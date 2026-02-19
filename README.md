@@ -2,7 +2,7 @@
 
 A lightweight LLM eval harness built for Memorang using TypeScript. It lets you define datasets of test cases, create graders with custom rubrics, and run experiments where Claude fact-checks your expected outputs — all in a clean three-tab web app.
 
-🎥 **[Watch the Loom walkthrough here][https://www.loom.com/share/0ed2e16d43504661908adf201f8187ba](https://www.loom.com/share/0ed2e16d43504661908adf201f8187ba))**
+🎥 **[Watch the Loom walkthrough here](https://www.loom.com/share/0ed2e16d43504661908adf201f8187ba)**
 
 ---
 
