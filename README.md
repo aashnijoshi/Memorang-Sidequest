@@ -134,7 +134,7 @@ This project had some fun bugs worth documenting:
 ## AI tools used
 
 - **ChatGPT** — initial planning and TypeScript learning questions
-- **V0.dev** — generated the initial UI prototype from a detailed prompt
+- **v0.dev** — generated the initial UI prototype from a detailed prompt
 - **Cursor** — primary coding environment, inline debugging, feature additions
 - **Claude (chat)** — complex debugging, understanding errors across files
 - **Claude Code** — deep repo analysis, finding the type mismatch bug that wasn't obvious from the surface
