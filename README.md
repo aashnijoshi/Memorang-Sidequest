@@ -4,6 +4,8 @@ A lightweight LLM eval harness built for Memorang using TypeScript. It lets you 
 
 🎥 **[Watch the Loom walkthrough here](https://www.loom.com/share/0ed2e16d43504661908adf201f8187ba)**
 
+**The project is live at:** https://memorang-sidequest.vercel.app/
+
 ---
 
 ## What it does
